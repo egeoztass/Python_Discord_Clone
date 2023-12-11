@@ -1,6 +1,7 @@
 import socket
 import threading
 
+
 class DiSUcordServer:
     def __init__(self, host='localhost'):
         self.host = host
@@ -61,8 +62,15 @@ class DiSUcordServer:
 
             while True:
                 message = conn.recv(1024).decode('utf-8')
-                if message:
-                    # Message format "channel:message"
+                if message.startswith("subscribe:"):
+                    channel = message.split(":")[1]
+                    self.channels[channel].add(username)
+                    self.log(f"{username} subscribed to {channel}")
+                elif message.startswith("unsubscribe:"):
+                    channel = message.split(":")[1]
+                    self.channels[channel].discard(username)
+                    self.log(f"{username} unsubscribed from {channel}")
+                elif ":" in message:
                     channel, msg = message.split(':', 1)
                     if channel in self.channels and username in self.channels[channel]:
                         self.multicast_message(f"{username}: {msg}", channel)
@@ -71,7 +79,7 @@ class DiSUcordServer:
                 else:
                     break
         except Exception as e:
-            if self.is_running:  # Only log error if the server is supposed to be running
+            if self.is_running:
                 self.log(f"Error with {username}: {e}")
         finally:
             conn.close()
@@ -81,12 +89,12 @@ class DiSUcordServer:
             self.log(f"{username} has disconnected.")
 
     def multicast_message(self, message, channel):
-        for username, conn in self.clients.items():
-            if username in self.channels[channel]:
-                try:
-                    conn.send(message.encode('utf-8'))
-                except Exception as e:
-                    self.log(f"Error sending message to {username}: {e}")
+        for user in self.channels[channel]:
+            client_conn = self.clients[user]
+            try:
+                client_conn.send(message.encode('utf-8'))
+            except Exception as e:
+                self.log(f"Error sending message to {user}: {e}")
 
     def set_log_callback(self, callback):
         self.log_callback = callback
