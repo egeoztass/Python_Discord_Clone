@@ -1,8 +1,100 @@
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
-from client import DiSUcordClient
+import socket
+import threading
 
+class DiSUcordClient:
+    def __init__(self, server_ip='localhost', server_port=12345):
+        self.subscribed_channels = set()
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.username = None
+        self.running = False
+        self.message_callback = None
 
+    def connect_to_server(self, username):
+        try:
+            self.client_socket.connect((self.server_ip, self.server_port))
+            self.username = username
+            self.client_socket.send(username.encode('utf-8'))
+            self.running = True
+            threading.Thread(target=self.receive_messages).start()
+            return True
+        except Exception as e:
+            print(f"Failed to connect to the server: {e}")
+            return False
+
+    def disconnect_from_server(self):
+        self.running = False
+        if self.client_socket:
+            self.client_socket.close()
+        if self.message_callback:
+            self.message_callback("Disconnected from server.")
+
+    def on_connection_lost(self):
+        self.running = False
+        if self.message_callback:
+            self.message_callback("Server closed the connection.")
+        self.disconnect_from_server()
+
+    def receive_messages(self):
+        while self.running:
+            try:
+                message = self.client_socket.recv(1024)
+                if len(message) == 0:
+                    self.on_connection_lost()  # Server connection closed
+                    break
+                decoded_message = message.decode('utf-8')
+                if self.message_callback:
+                    self.message_callback(decoded_message)
+            except socket.error as e:
+                self.on_connection_lost()  # Socket error, likely disconnection
+                break
+
+    def send_channel_message(self, channel, message):
+        if not self.running or channel not in self.subscribed_channels:
+            messagebox.showerror("Error", "You are not properly connected or subscribed.")
+            return
+
+        formatted_message = f"{channel}:{message}"  # Include channel for server processing
+        try:
+            self.client_socket.send(formatted_message.encode('utf-8'))
+        except Exception as e:
+            # Handle errors here
+            print(f"Error sending message: {e}")
+
+    def send_message(self, message):
+        try:
+            self.client_socket.send(message.encode('utf-8'))
+        except BrokenPipeError:
+            messagebox.showerror("Connection Error", "Connection lost. Please reconnect.")
+            self.disconnect_from_server()
+        except Exception as e:
+            print(f"Error sending message: {e}")
+
+    def close_connection(self):
+        self.running = False
+        self.client_socket.close()
+
+    def set_message_callback(self, callback):
+        self.message_callback = callback
+
+    def subscribe_to_channel(self, channel):
+        if channel in self.subscribed_channels:
+            messagebox.showinfo("Subscription", f"You are already subscribed to {channel}")
+            return
+
+        self.send_message(f"subscribe:{channel}")
+        self.subscribed_channels.add(channel)
+
+    def unsubscribe_from_channel(self, channel):
+        if channel not in self.subscribed_channels:
+            messagebox.showinfo("Unsubscription", f"You are not subscribed to {channel}")
+            return
+
+        self.send_message(f"unsubscribe:{channel}")
+        self.subscribed_channels.discard(channel)
 class ClientGUI:
     def __init__(self, master):
         self.master = master
@@ -211,9 +303,20 @@ class ClientGUI:
         self.master.after(0, lambda: self.handle_message(message))
 
     def handle_message(self, message):
-        if message == "Server closed the connection.":
-            self.on_connection_lost()
-            return
+        if message.startswith("from you to "):
+            # Handle messages sent by the user
+            channel_message = message[len("from you to "):]
+            channel, user_message = channel_message.split(':', 1)
+            self.update_channel_message(channel.strip(), "You", user_message.strip())
+        elif ':' in message:
+            # Handle messages received from others
+            parts = message.split(':', 2)
+            if len(parts) == 3:
+                username, channel, user_message = parts
+                self.update_channel_message(channel.strip(), username.strip(), user_message.strip())
+        else:
+            # General status message handling
+            self.update_status_message(message)
 
     def on_connection_lost(self):
         # Perform GUI updates here
@@ -239,15 +342,18 @@ class ClientGUI:
         self.status_messages.see(tk.END)
 
     def update_channel_message(self, channel, username, message):
-        channel_to_textbox = {
-            "IF 100": self.if100_messages,
-            "SPS 101": self.sps101_messages,
-        }
+        textbox = None
+        if channel == "IF 100":
+            textbox = self.if100_messages
+        elif channel == "SPS 101":
+            textbox = self.sps101_messages
 
-        if channel in channel_to_textbox:
-            self.update_text_box(channel_to_textbox[channel], username, message)
-        else:
-            print(f"Received message for unknown channel: {channel}")
+        if textbox:
+            formatted_message = f"{username}: {message}\n"
+            textbox.config(state='normal')
+            textbox.insert(tk.END, formatted_message)
+            textbox.config(state='disabled')
+            textbox.see(tk.END)
 
     def update_text_box(self, text_widget, username, message):
         # Format the message with the username
